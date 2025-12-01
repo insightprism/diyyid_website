@@ -382,10 +382,18 @@ export function RequestForm() {
                 </button>
               )}
 
+              {/*
+                capture="environment" enables the rear camera on mobile devices.
+                This allows users to take photos directly instead of just selecting from gallery.
+                - "environment" = rear/back camera (preferred for photographing repairs)
+                - "user" = front/selfie camera
+                Note: capture is ignored on desktop browsers.
+              */}
               <input
                 ref={fileInputRef}
                 type="file"
                 accept="image/*"
+                capture="environment"
                 multiple
                 onChange={handleFileSelect}
                 className="hidden"

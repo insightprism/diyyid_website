@@ -127,7 +127,7 @@ export const createPaymentIntent = functions.https.onCall(async (data, context) 
 });
 
 /**
- * Capture a pre-authorized payment
+ * Capture a pre-authorized payment with retry logic
  */
 export const capturePayment = functions.https.onCall(async (data, context) => {
   if (!context.auth) {
@@ -143,31 +143,72 @@ export const capturePayment = functions.https.onCall(async (data, context) => {
     );
   }
 
-  try {
-    // Capture the payment
-    const paymentIntent = await stripe.paymentIntents.capture(paymentIntentId);
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY_MS = 1000;
 
-    // Update request payment status
-    if (requestId) {
-      await db.collection('requests').doc(requestId).update({
-        paymentStatus: 'captured',
-        paymentCapturedAt: admin.firestore.FieldValue.serverTimestamp(),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
+  let lastError: any = null;
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      // Capture the payment
+      const paymentIntent = await stripe.paymentIntents.capture(paymentIntentId);
+
+      // Update request payment status
+      if (requestId) {
+        await db.collection('requests').doc(requestId).update({
+          paymentStatus: 'captured',
+          paymentCapturedAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+      }
+
+      return {
+        success: true,
+        paymentIntent: {
+          id: paymentIntent.id,
+          status: paymentIntent.status,
+          amount: paymentIntent.amount,
+        },
+      };
+    } catch (error: any) {
+      lastError = error;
+      console.error(`Payment capture attempt ${attempt} failed:`, error.message);
+
+      // Don't retry if it's a card error or already captured
+      if (error.type === 'StripeCardError' ||
+          error.code === 'payment_intent_unexpected_state') {
+        break;
+      }
+
+      // Wait before retrying (exponential backoff)
+      if (attempt < MAX_RETRIES) {
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS * attempt));
+      }
     }
-
-    return {
-      success: true,
-      paymentIntent: {
-        id: paymentIntent.id,
-        status: paymentIntent.status,
-        amount: paymentIntent.amount,
-      },
-    };
-  } catch (error: any) {
-    console.error('Error capturing payment:', error);
-    throw new functions.https.HttpsError('internal', 'Failed to capture payment');
   }
+
+  // All retries failed - mark as needing manual review
+  if (requestId) {
+    await db.collection('requests').doc(requestId).update({
+      paymentStatus: 'capture_failed',
+      paymentError: lastError?.message || 'Unknown error',
+      paymentCaptureAttempts: MAX_RETRIES,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    // Log to a separate collection for admin review
+    await db.collection('payment_failures').add({
+      requestId,
+      paymentIntentId,
+      error: lastError?.message || 'Unknown error',
+      errorCode: lastError?.code,
+      attempts: MAX_RETRIES,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  }
+
+  console.error('Payment capture failed after all retries:', lastError);
+  throw new functions.https.HttpsError('internal', 'Failed to capture payment after retries');
 });
 
 /**

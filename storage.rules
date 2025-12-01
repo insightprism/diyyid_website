@@ -1,0 +1,52 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Helper function to check if user is authenticated
+    function is_authenticated() {
+      return request.auth != null;
+    }
+
+    // Check file size (max 10MB)
+    function is_valid_size() {
+      return request.resource.size < 10 * 1024 * 1024;
+    }
+
+    // Check if file is an image
+    function is_image() {
+      return request.resource.contentType.matches('image/.*');
+    }
+
+    // Request photos
+    match /requests/{request_id}/{file_name} {
+      // Anyone authenticated can read request photos
+      allow read: if is_authenticated();
+
+      // Authenticated users can upload images to their requests
+      allow create: if is_authenticated() && is_image() && is_valid_size();
+
+      // No updates or deletes
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // User profile photos
+    match /users/{user_id}/{file_name} {
+      // Anyone can read profile photos
+      allow read: if true;
+
+      // Users can upload their own profile photo
+      allow create: if is_authenticated() &&
+        request.auth.uid == user_id &&
+        is_image() &&
+        is_valid_size();
+
+      // Users can update their own profile photo
+      allow update: if is_authenticated() &&
+        request.auth.uid == user_id &&
+        is_image() &&
+        is_valid_size();
+
+      allow delete: if is_authenticated() && request.auth.uid == user_id;
+    }
+  }
+}

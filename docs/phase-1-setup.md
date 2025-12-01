@@ -232,6 +232,9 @@ VITE_STRIPE_PUBLISHABLE_KEY=pk_test_your_key_here
 # App Configuration
 VITE_APP_NAME=HomePro Assist
 VITE_SESSION_PRICE_CENTS=2500
+
+# Firebase Cloud Messaging (for push notifications - Phase 7)
+VITE_FIREBASE_VAPID_KEY=your_vapid_key_here
 ```
 
 Create `.env.local` with actual values (this file should be git-ignored).
@@ -330,15 +333,30 @@ export interface Session {
   requestId: string;
   customerId: string;
   helperId: string;
+
+  // Zoho Lens integration
   zohoSessionId?: string;
-  zohoSessionUrl?: string;
+  zohoSessionUrl?: string;        // Legacy - use zohoCustomerUrl instead
+  zohoTechnicianUrl?: string;     // URL for Helper to access Zoho console
+  zohoCustomerUrl?: string;       // URL for Customer to join session
+
+  // SMS invite tracking
+  smsInviteSent?: boolean;
+  smsInviteSentAt?: Timestamp;
+
+  // Session state
   status: SessionStatus;
   safetyChecklistCompleted: boolean;
+
+  // Timing
   startedAt?: Timestamp;
   endedAt?: Timestamp;
-  duration?: number;
+  duration?: number;              // In seconds
+
+  // Outcome
   outcome?: 'resolved' | 'unresolved' | 'escalated';
   notes?: string;
+
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }

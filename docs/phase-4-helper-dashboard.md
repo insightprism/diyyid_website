@@ -580,42 +580,240 @@ import { HelperDashboard } from './pages/helper/Dashboard';
 
 ### Task 4.7: Update useAuth Hook for Real-time User Updates
 
-Update `src/hooks/useAuth.tsx` to listen for user profile changes:
+Update `src/hooks/useAuth.tsx` to listen for user profile changes.
+
+**Important:** The original pattern had a bug where the inner Firestore listener couldn't be properly cleaned up. This corrected version manages both listeners properly.
+
+Replace the entire `AuthProvider` component with this corrected version:
 
 ```typescript
-// Replace the useEffect that fetches user profile with this:
-useEffect(() => {
-  const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-    setFirebaseUser(firebaseUser);
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+  useRef,
+  ReactNode,
+} from 'react';
+import {
+  User as FirebaseUser,
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  signOut as firebaseSignOut,
+  updateProfile,
+} from 'firebase/auth';
+import {
+  doc,
+  getDoc,
+  setDoc,
+  serverTimestamp,
+  onSnapshot,
+  Unsubscribe,
+} from 'firebase/firestore';
+import { auth, db } from '../services/firebase';
+import { User, UserRole } from '../types';
 
-    if (firebaseUser) {
-      // Set up real-time listener for user profile
-      const userDocRef = doc(db, 'users', firebaseUser.uid);
-      const unsubscribeUser = onSnapshot(userDocRef, (doc) => {
-        if (doc.exists()) {
-          setUser({ uid: firebaseUser.uid, ...doc.data() } as User);
-        } else {
-          setUser(null);
-        }
+interface AuthContextType {
+  firebaseUser: FirebaseUser | null;
+  user: User | null;
+  loading: boolean;
+  error: string | null;
+  signIn: (email: string, password: string) => Promise<void>;
+  signUp: (
+    email: string,
+    password: string,
+    displayName: string,
+    phone: string,
+    role: UserRole
+  ) => Promise<void>;
+  signOut: () => Promise<void>;
+  clearError: () => void;
+}
+
+const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+export function AuthProvider({ children }: { children: ReactNode }) {
+  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // Ref to store the Firestore user listener for cleanup
+  const userListenerRef = useRef<Unsubscribe | null>(null);
+
+  // Listen for auth state changes
+  useEffect(() => {
+    const unsubscribeAuth = onAuthStateChanged(auth, (firebaseUser) => {
+      setFirebaseUser(firebaseUser);
+
+      // Clean up any existing user listener
+      if (userListenerRef.current) {
+        userListenerRef.current();
+        userListenerRef.current = null;
+      }
+
+      if (firebaseUser) {
+        // Set up real-time listener for user profile
+        const userDocRef = doc(db, 'users', firebaseUser.uid);
+
+        userListenerRef.current = onSnapshot(
+          userDocRef,
+          (docSnapshot) => {
+            if (docSnapshot.exists()) {
+              setUser({ uid: firebaseUser.uid, ...docSnapshot.data() } as User);
+            } else {
+              setUser(null);
+            }
+            setLoading(false);
+          },
+          (error) => {
+            console.error('Error listening to user profile:', error);
+            setUser(null);
+            setLoading(false);
+          }
+        );
+      } else {
+        setUser(null);
         setLoading(false);
-      });
+      }
+    });
 
-      // Store unsubscribe function for cleanup
-      return () => unsubscribeUser();
-    } else {
-      setUser(null);
+    // Cleanup function
+    return () => {
+      unsubscribeAuth();
+      if (userListenerRef.current) {
+        userListenerRef.current();
+        userListenerRef.current = null;
+      }
+    };
+  }, []);
+
+  const signIn = async (email: string, password: string) => {
+    try {
+      setError(null);
+      setLoading(true);
+      await signInWithEmailAndPassword(auth, email, password);
+    } catch (err: any) {
+      setError(getErrorMessage(err.code));
+      throw err;
+    } finally {
       setLoading(false);
     }
-  });
+  };
 
-  return () => unsubscribe();
-}, []);
+  const signUp = async (
+    email: string,
+    password: string,
+    displayName: string,
+    phone: string,
+    role: UserRole
+  ) => {
+    try {
+      setError(null);
+      setLoading(true);
+
+      // Create Firebase auth user
+      const credential = await createUserWithEmailAndPassword(
+        auth,
+        email,
+        password
+      );
+
+      // Update display name in Firebase Auth
+      await updateProfile(credential.user, { displayName });
+
+      // Create user profile in Firestore
+      const userProfile: Omit<User, 'uid'> = {
+        email,
+        phone,
+        displayName,
+        role,
+        createdAt: serverTimestamp() as any,
+        updatedAt: serverTimestamp() as any,
+        ...(role === 'helper' && {
+          isAvailable: false,
+          specialties: [],
+          completedSessions: 0,
+        }),
+      };
+
+      await setDoc(doc(db, 'users', credential.user.uid), userProfile);
+    } catch (err: any) {
+      setError(getErrorMessage(err.code));
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const signOut = async () => {
+    try {
+      await firebaseSignOut(auth);
+    } catch (err: any) {
+      setError(getErrorMessage(err.code));
+      throw err;
+    }
+  };
+
+  const clearError = () => setError(null);
+
+  return (
+    <AuthContext.Provider
+      value={{
+        firebaseUser,
+        user,
+        loading,
+        error,
+        signIn,
+        signUp,
+        signOut,
+        clearError,
+      }}
+    >
+      {children}
+    </AuthContext.Provider>
+  );
+}
+
+export function useAuth() {
+  const context = useContext(AuthContext);
+  if (context === undefined) {
+    throw new Error('useAuth must be used within an AuthProvider');
+  }
+  return context;
+}
+
+// Helper function to convert Firebase error codes to user-friendly messages
+function getErrorMessage(errorCode: string): string {
+  switch (errorCode) {
+    case 'auth/email-already-in-use':
+      return 'This email is already registered. Please sign in instead.';
+    case 'auth/invalid-email':
+      return 'Please enter a valid email address.';
+    case 'auth/operation-not-allowed':
+      return 'Email/password sign in is not enabled.';
+    case 'auth/weak-password':
+      return 'Password must be at least 6 characters.';
+    case 'auth/user-disabled':
+      return 'This account has been disabled.';
+    case 'auth/user-not-found':
+      return 'No account found with this email.';
+    case 'auth/wrong-password':
+      return 'Incorrect password. Please try again.';
+    case 'auth/too-many-requests':
+      return 'Too many attempts. Please try again later.';
+    default:
+      return 'An error occurred. Please try again.';
+  }
+}
 ```
 
-Add the `onSnapshot` import at the top:
-```typescript
-import { doc, getDoc, setDoc, serverTimestamp, onSnapshot } from 'firebase/firestore';
-```
+**Key fix:** The corrected version uses a `useRef` to store the Firestore listener unsubscribe function, allowing proper cleanup when:
+- The auth state changes (user signs out)
+- The component unmounts
+
+This prevents memory leaks and stale listener issues.
 
 ### Task 4.8: Create Firestore Indexes
 

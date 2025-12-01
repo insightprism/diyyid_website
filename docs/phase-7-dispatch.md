@@ -34,6 +34,51 @@ Implement automated Helper dispatch notifications and complete session lifecycle
 
 ---
 
+## FCM Setup Instructions
+
+Before implementing push notifications, complete this FCM setup:
+
+### Step 1: Enable Cloud Messaging in Firebase Console
+
+1. Go to Firebase Console → Project Settings → Cloud Messaging
+2. Enable Cloud Messaging API (V1) if not already enabled
+3. Note your Sender ID (you'll need this)
+
+### Step 2: Generate VAPID Key (Web Push Certificate)
+
+1. In Firebase Console → Project Settings → Cloud Messaging
+2. Scroll to "Web configuration"
+3. Click "Generate key pair" under Web Push certificates
+4. Copy the key pair (this is your VAPID key)
+5. Add to your `.env.local`:
+   ```
+   VITE_FIREBASE_VAPID_KEY=your_vapid_key_here
+   ```
+
+### Step 3: Add Firebase Messaging SDK
+
+```bash
+npm install firebase
+```
+
+The `firebase` package already includes messaging - no additional install needed.
+
+### Step 4: Register Service Worker
+
+Add to `index.html` (before closing `</body>` tag):
+
+```html
+<script>
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/firebase-messaging-sw.js')
+      .then(registration => console.log('SW registered:', registration.scope))
+      .catch(err => console.error('SW registration failed:', err));
+  }
+</script>
+```
+
+---
+
 ## Session Lifecycle States
 
 ```
@@ -355,20 +400,29 @@ export function onForegroundMessage(callback: (payload: any) => void) {
 
 ### Task 7.3: Create Service Worker for Background Notifications
 
-Create `public/firebase-messaging-sw.js`:
+**Important:** Service workers cannot access environment variables directly. You have two options:
+
+**Option A (Recommended):** Generate the service worker at build time
+
+Create `scripts/generate-sw.js`:
 
 ```javascript
-// Firebase messaging service worker
-importScripts('https://www.gstatic.com/firebasejs/9.0.0/firebase-app-compat.js');
-importScripts('https://www.gstatic.com/firebasejs/9.0.0/firebase-messaging-compat.js');
+const fs = require('fs');
+const path = require('path');
+require('dotenv').config({ path: '.env.local' });
+
+const swContent = `
+// Firebase messaging service worker (auto-generated)
+importScripts('https://www.gstatic.com/firebasejs/10.7.0/firebase-app-compat.js');
+importScripts('https://www.gstatic.com/firebasejs/10.7.0/firebase-messaging-compat.js');
 
 firebase.initializeApp({
-  apiKey: 'YOUR_API_KEY',
-  authDomain: 'YOUR_AUTH_DOMAIN',
-  projectId: 'YOUR_PROJECT_ID',
-  storageBucket: 'YOUR_STORAGE_BUCKET',
-  messagingSenderId: 'YOUR_SENDER_ID',
-  appId: 'YOUR_APP_ID',
+  apiKey: '${process.env.VITE_FIREBASE_API_KEY}',
+  authDomain: '${process.env.VITE_FIREBASE_AUTH_DOMAIN}',
+  projectId: '${process.env.VITE_FIREBASE_PROJECT_ID}',
+  storageBucket: '${process.env.VITE_FIREBASE_STORAGE_BUCKET}',
+  messagingSenderId: '${process.env.VITE_FIREBASE_MESSAGING_SENDER_ID}',
+  appId: '${process.env.VITE_FIREBASE_APP_ID}',
 });
 
 const messaging = firebase.messaging();
@@ -376,9 +430,95 @@ const messaging = firebase.messaging();
 messaging.onBackgroundMessage((payload) => {
   console.log('Background message:', payload);
 
-  const notificationTitle = payload.notification.title;
+  const notificationTitle = payload.notification?.title || 'HomePro Assist';
   const notificationOptions = {
-    body: payload.notification.body,
+    body: payload.notification?.body || 'You have a new notification',
+    icon: '/icon-192.png',
+    badge: '/badge-72.png',
+    data: payload.data,
+    actions: [
+      { action: 'view', title: 'View' },
+      { action: 'dismiss', title: 'Dismiss' },
+    ],
+  };
+
+  self.registration.showNotification(notificationTitle, notificationOptions);
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+
+  if (event.action === 'view' || !event.action) {
+    const data = event.notification.data;
+
+    let url = '/';
+    if (data?.type === 'new_request') {
+      url = '/helper/dashboard';
+    } else if (data?.requestId) {
+      url = '/customer/request/' + data.requestId + '/status';
+    }
+
+    event.waitUntil(
+      clients.matchAll({ type: 'window' }).then((clientList) => {
+        for (const client of clientList) {
+          if (client.url.includes(self.location.origin) && 'focus' in client) {
+            return client.focus();
+          }
+        }
+        return clients.openWindow(url);
+      })
+    );
+  }
+});
+`;
+
+fs.writeFileSync(
+  path.join(__dirname, '../public/firebase-messaging-sw.js'),
+  swContent.trim()
+);
+
+console.log('Service worker generated successfully!');
+```
+
+Add to `package.json` scripts:
+
+```json
+{
+  "scripts": {
+    "generate-sw": "node scripts/generate-sw.js",
+    "dev": "npm run generate-sw && vite",
+    "build": "npm run generate-sw && tsc && vite build"
+  }
+}
+```
+
+**Option B:** Hardcode values (simpler but less secure)
+
+Create `public/firebase-messaging-sw.js` with your actual Firebase config values directly. This is acceptable since Firebase config is not secret (it's exposed in the client anyway), but Option A is cleaner for environment management.
+
+```javascript
+// Firebase messaging service worker
+importScripts('https://www.gstatic.com/firebasejs/10.7.0/firebase-app-compat.js');
+importScripts('https://www.gstatic.com/firebasejs/10.7.0/firebase-messaging-compat.js');
+
+// REPLACE THESE WITH YOUR ACTUAL VALUES
+firebase.initializeApp({
+  apiKey: 'AIzaSy...',           // Your actual API key
+  authDomain: 'your-project.firebaseapp.com',
+  projectId: 'your-project-id',
+  storageBucket: 'your-project.appspot.com',
+  messagingSenderId: '123456789',
+  appId: '1:123456789:web:abc123',
+});
+
+const messaging = firebase.messaging();
+
+messaging.onBackgroundMessage((payload) => {
+  console.log('Background message:', payload);
+
+  const notificationTitle = payload.notification?.title || 'HomePro Assist';
+  const notificationOptions = {
+    body: payload.notification?.body || 'You have a new notification',
     icon: '/icon-192.png',
     badge: '/badge-72.png',
     data: payload.data,

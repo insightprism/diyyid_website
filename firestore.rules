@@ -1,0 +1,108 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper function to check if user is authenticated
+    function is_authenticated() {
+      return request.auth != null;
+    }
+
+    // Helper function to check if user owns the document
+    function is_owner(user_id) {
+      return is_authenticated() && request.auth.uid == user_id;
+    }
+
+    // Helper function to get user role from custom claims
+    function get_role() {
+      return request.auth.token.role;
+    }
+
+    // Helper function to check if user is a helper
+    function is_helper() {
+      return is_authenticated() && get_role() == 'helper';
+    }
+
+    // Helper function to check if user is a customer
+    function is_customer() {
+      return is_authenticated() && get_role() == 'customer';
+    }
+
+    // Users collection
+    match /users/{user_id} {
+      allow read: if is_authenticated();
+      allow create: if is_owner(user_id);
+      allow update: if is_owner(user_id);
+      allow delete: if false;
+    }
+
+    // Requests collection
+    match /requests/{request_id} {
+      // Anyone authenticated can read requests
+      allow read: if is_authenticated();
+
+      // Customers can create requests
+      allow create: if is_customer() &&
+        request.resource.data.customer_id == request.auth.uid;
+
+      // Customers can update their own pending requests
+      // Helpers can claim pending requests and update claimed ones
+      allow update: if is_authenticated() && (
+        // Customer updating their own request
+        (is_customer() && resource.data.customer_id == request.auth.uid) ||
+        // Helper claiming a pending request
+        (is_helper() && resource.data.status == 'pending' && request.resource.data.status == 'claimed') ||
+        // Helper updating their claimed request
+        (is_helper() && resource.data.helper_id == request.auth.uid)
+      );
+
+      allow delete: if false;
+    }
+
+    // Sessions collection
+    match /sessions/{session_id} {
+      // Participants can read their sessions
+      allow read: if is_authenticated() && (
+        resource.data.helper_id == request.auth.uid ||
+        resource.data.customer_id == request.auth.uid
+      );
+
+      // Helpers can create sessions
+      allow create: if is_helper();
+
+      // Participants can update sessions
+      allow update: if is_authenticated() && (
+        resource.data.helper_id == request.auth.uid ||
+        resource.data.customer_id == request.auth.uid
+      );
+
+      allow delete: if false;
+    }
+
+    // Notifications collection
+    match /notifications/{notification_id} {
+      // Users can read their own notifications
+      allow read: if is_authenticated() && resource.data.user_id == request.auth.uid;
+
+      // Only functions can create notifications
+      allow create: if false;
+
+      // Users can update their own notifications (mark as read)
+      allow update: if is_authenticated() && resource.data.user_id == request.auth.uid;
+
+      allow delete: if is_authenticated() && resource.data.user_id == request.auth.uid;
+    }
+
+    // Payments collection
+    match /payments/{payment_id} {
+      // Users can read their own payments
+      allow read: if is_authenticated() && (
+        resource.data.customer_id == request.auth.uid ||
+        resource.data.helper_id == request.auth.uid
+      );
+
+      // Only functions can create/update payments
+      allow create: if false;
+      allow update: if false;
+      allow delete: if false;
+    }
+  }
+}

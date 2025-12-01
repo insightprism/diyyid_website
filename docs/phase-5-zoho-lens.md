@@ -6,6 +6,29 @@ Integrate Zoho Lens API to enable real-time video sessions with AR annotation ca
 
 ---
 
+## ⚠️ IMPORTANT: API Verification Required
+
+**The Zoho Lens API code in this phase is based on documented patterns but MUST be verified against the actual API before implementation.**
+
+Before coding, complete these verification steps:
+
+1. **Create Zoho Lens Account**: Sign up at https://www.zoho.com/lens/
+2. **Review Official API Docs**: https://www.zoho.com/lens/resources/api/introduction.html
+3. **Generate OAuth Credentials**:
+   - Create a "Server-based Application" in Zoho API Console
+   - Get Client ID and Client Secret
+   - Generate Refresh Token with appropriate scopes
+4. **Test in Sandbox**: Manually test these API calls before integrating:
+   - Token refresh
+   - Session creation
+   - SMS invite sending
+   - Session termination
+5. **Confirm Response Formats**: The actual response field names may differ from this spec
+
+**Recommended**: Create a standalone test script to validate the API before full integration.
+
+---
+
 ## Why We Need This Phase
 
 1. **Core Value Proposition** - AR-guided assistance is the main product feature
@@ -464,7 +487,7 @@ Create `src/pages/helper/Session.tsx`:
 ```typescript
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { doc, onSnapshot, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, onSnapshot, updateDoc, serverTimestamp, getDoc } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { db, functions } from '../../services/firebase';
 import { useAuth } from '../../hooks/useAuth';
@@ -492,9 +515,9 @@ export function HelperSession() {
 
     const unsubscribe = onSnapshot(
       doc(db, 'sessions', sessionId),
-      async (doc) => {
-        if (doc.exists()) {
-          const sessionData = { id: doc.id, ...doc.data() } as Session;
+      async (docSnapshot) => {
+        if (docSnapshot.exists()) {
+          const sessionData = { id: docSnapshot.id, ...docSnapshot.data() } as Session;
           setSession(sessionData);
 
           // Determine current step
@@ -513,14 +536,16 @@ export function HelperSession() {
             setStep('ended');
           }
 
-          // Fetch associated request
-          if (sessionData.requestId) {
-            const requestDoc = await doc.ref.firestore
-              .collection('requests')
-              .doc(sessionData.requestId)
-              .get();
-            if (requestDoc.exists) {
-              setRequest({ id: requestDoc.id, ...requestDoc.data() } as Request);
+          // Fetch associated request using proper Firestore pattern
+          if (sessionData.requestId && !request) {
+            try {
+              const requestDocRef = doc(db, 'requests', sessionData.requestId);
+              const requestDoc = await getDoc(requestDocRef);
+              if (requestDoc.exists()) {
+                setRequest({ id: requestDoc.id, ...requestDoc.data() } as Request);
+              }
+            } catch (err) {
+              console.error('Error fetching request:', err);
             }
           }
         }
@@ -532,7 +557,7 @@ export function HelperSession() {
     );
 
     return () => unsubscribe();
-  }, [sessionId]);
+  }, [sessionId, request]);
 
   const handleSafetyComplete = async () => {
     if (!sessionId) return;
